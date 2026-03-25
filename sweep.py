@@ -3,8 +3,8 @@ from itertools import product
 
 # sweep params
 NUM_LAYERS=[10, 12, 14, 16]
-MLP_MULT=[2, 3, 4]
-MODEL_DIM=[512, 576, 600]
+MLP_MULT=[2, 3]
+MODEL_DIM=[384, 448, 512]
 
 my_env = os.environ.copy()
 
