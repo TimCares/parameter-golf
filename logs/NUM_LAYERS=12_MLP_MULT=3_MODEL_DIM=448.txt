@@ -53,7 +53,6 @@ class Hyperparameters:
     # Training length.
     iterations = int(os.environ.get("ITERATIONS", 20000))
     warmdown_iters = int(os.environ.get("WARMDOWN_ITERS", 1200))
-    lr_warmup_iters = int(os.environ.get("LR_WARMUP_ITERS", 0))
     warmup_steps = int(os.environ.get("WARMUP_STEPS", 20))
     train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 524_288))
     train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024))
@@ -922,20 +921,16 @@ def main() -> None:
 
     max_wallclock_ms = 1000.0 * args.max_wallclock_seconds if args.max_wallclock_seconds > 0 else None
 
-    def lr_mul(step: int, elapsed_ms: float) -> tuple[float, float]:
-        step_ms = elapsed_ms / max(step, 1)
-        warmup_ms = args.lr_warmup_iters * step_ms
-        is_warmup = args.lr_warmup_iters > 0 and warmup_ms > 0 and elapsed_ms <= warmup_ms
-        if is_warmup:
-            return min(max(elapsed_ms / warmup_ms, 1e-3), 1.0), 1.0
+    def lr_mul(step: int, elapsed_ms: float) -> float:
         if args.warmdown_iters <= 0:
-            return 1.0, 1.0
+            return 1.0
+        if max_wallclock_ms is None:
+            warmdown_start = max(args.iterations - args.warmdown_iters, 0)
+            return max((args.iterations - step) / max(args.warmdown_iters, 1), 0.0) if warmdown_start <= step < args.iterations else 1.0
+        step_ms = elapsed_ms / max(step, 1)
         warmdown_ms = args.warmdown_iters * step_ms
         remaining_ms = max(max_wallclock_ms - elapsed_ms, 0.0)
-        warmdown_lr_mul = remaining_ms / max(warmdown_ms, 1e-9)
-        if remaining_ms <= warmdown_ms:
-            return warmdown_lr_mul, warmdown_lr_mul
-        return 1.0, 1.0
+        return remaining_ms / max(warmdown_ms, 1e-9) if remaining_ms <= warmdown_ms else 1.0
 
     # Warmup primes the compiled forward/backward/optimizer paths, then we restore the
     # initial weights/optimizer state so measured training starts from the true init.
@@ -1010,7 +1005,7 @@ def main() -> None:
             break
 
         elapsed_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
-        scale_adam, scale_muon = lr_mul(step, elapsed_ms)
+        scale = lr_mul(step, elapsed_ms)
         zero_grad_all()
         train_loss = torch.zeros((), device=device)
         for micro_step in range(grad_accum_steps):
@@ -1030,7 +1025,7 @@ def main() -> None:
 
         for opt in optimizers:
             for group in opt.param_groups:
-                group["lr"] = group["base_lr"] * scale_adam if isinstance(opt, torch.optim.Adam) else scale_muon
+                group["lr"] = group["base_lr"] * scale
 
         if args.grad_clip_norm > 0:
             torch.nn.utils.clip_grad_norm_(base_model.parameters(), args.grad_clip_norm)
@@ -1129,3 +1124,83 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+====================================================================================================
+Running Python 3.12.3 (main, Nov  6 2025, 13:44:16) [GCC 13.3.0]
+Running PyTorch 2.9.1+cu128
+Wed Mar 25 22:44:03 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.09             Driver Version: 580.126.09     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA H100 80GB HBM3          On  |   00000000:4C:00.0 Off |                    0 |
+| N/A   38C    P0             92W /  700W |    1185MiB /  81559MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+
+====================================================================================================
+val_bpb:enabled tokenizer_kind=sentencepiece tokenizer_path=./data/tokenizers/fineweb_1024_bpe.model
+train_loader:dataset:fineweb10B_sp1024 train_shards:10
+val_loader:shards pattern=./data/datasets/fineweb10B_sp1024/fineweb_val_*.bin tokens:62021632
+model_params:22159072
+world_size:1 grad_accum_steps:8
+sdp_backends:cudnn=False flash=True mem_efficient=False math=False
+attention_mode:gqa num_heads:8 num_kv_heads:4
+tie_embeddings:True embed_lr:0.05 head_lr:0.0 matrix_lr:0.04 scalar_lr:0.04
+train_batch_tokens:524288 train_seq_len:1024 iterations:20000 warmup_steps:20 max_wallclock_seconds:120.000
+seed:1337
+warmup_step:1/20
+warmup_step:2/20
+warmup_step:3/20
+warmup_step:4/20
+warmup_step:5/20
+warmup_step:6/20
+warmup_step:7/20
+warmup_step:8/20
+warmup_step:9/20
+warmup_step:10/20
+warmup_step:11/20
+warmup_step:12/20
+warmup_step:13/20
+warmup_step:14/20
+warmup_step:15/20
+warmup_step:16/20
+warmup_step:17/20
+warmup_step:18/20
+warmup_step:19/20
+warmup_step:20/20
+step:1/20000 train_loss:6.9342 train_time:585ms step_avg:585.01ms
+step:2/20000 train_loss:15.0063 train_time:1140ms step_avg:570.11ms
+step:3/20000 train_loss:7.9671 train_time:1725ms step_avg:574.94ms
+step:4/20000 train_loss:6.6121 train_time:2287ms step_avg:571.78ms
+step:5/20000 train_loss:7.0576 train_time:2846ms step_avg:569.28ms
+step:6/20000 train_loss:7.0993 train_time:3439ms step_avg:573.18ms
+step:7/20000 train_loss:6.6375 train_time:4009ms step_avg:572.67ms
+step:8/20000 train_loss:6.3683 train_time:4562ms step_avg:570.25ms
+step:9/20000 train_loss:6.2031 train_time:5143ms step_avg:571.44ms
+step:10/20000 train_loss:6.0750 train_time:5737ms step_avg:573.74ms
+step:50/20000 train_loss:3.9320 train_time:29058ms step_avg:581.15ms
+step:100/20000 train_loss:3.3176 train_time:58488ms step_avg:584.88ms
+step:150/20000 train_loss:3.0263 train_time:87355ms step_avg:582.37ms
+step:200/20000 train_loss:2.7942 train_time:116752ms step_avg:583.76ms
+step:206/20000 val_loss:2.8231 val_bpb:1.6720 train_time:120280ms step_avg:583.88ms
+stopping_early: wallclock_cap train_time:120280ms step:206/20000
+peak memory allocated: 13478 MiB reserved: 13748 MiB
+Serialized model: 87763595 bytes
+Code size: 47686 bytes
+Total submission size: 87811281 bytes
+Serialized model int8+zlib: 15126997 bytes (payload:22309248 raw_torch:22369081 payload_ratio:3.93x)
+Total submission size int8+zlib: 15174683 bytes
+final_int8_zlib_roundtrip val_loss:2.8250 val_bpb:1.6731 eval_time:16871ms
+final_int8_zlib_roundtrip_exact val_loss:2.82498022 val_bpb:1.67311241

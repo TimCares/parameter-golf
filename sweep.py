@@ -1,41 +1,41 @@
 import subprocess, os
 from itertools import product
 
-# sweep params
-NUM_LAYERS=[10, 12, 14, 16]
-MLP_MULT=[2, 3]
-MODEL_DIM=[384, 448, 512]
+# --- Sweep params (all combinations will be run) ---
+SWEEP = {
+    "TRAIN_SEQ_LEN":   [1024, 2048, 4096],
+    "LR_WARMUP_ITERS": [0, 10, 20],
+}
 
+# --- Fixed params (same for every run) ---
+FIXED = {
+    "NUM_LAYERS":             "10",
+    "MLP_MULT":               "3",
+    "MODEL_DIM":              "448",
+    "VOCAB_SIZE":             "1024",
+    "MAX_WALLCLOCK_SECONDS":  "240",
+    "VAL_LOSS_EVERY":         "0",
+    "TRAIN_LOG_EVERY":        "10",
+    "WARMDOWN_ITERS":         "0",
+}
+
+# --- Run sweep ---
+keys, value_lists = zip(*SWEEP.items())
 my_env = os.environ.copy()
+my_env.update({k: str(v) for k, v in FIXED.items()})
 
-for num_layers, mlp_mult, model_dim in product(NUM_LAYERS, MLP_MULT, MODEL_DIM):
-    zipped = zip(["NUM_LAYERS", "MLP_MULT", "MODEL_DIM"], [num_layers, mlp_mult, model_dim], strict=True)
-    RUN_ID="_".join(f"{n}={v}" for n, v in zipped) # join param settings
+for combo in product(*value_lists):
+    sweep_params = dict(zip(keys, combo))
+    run_id = "_".join(f"{k}={v}" for k, v in sweep_params.items())
 
-    args_dict = {
-        "RUN_ID": RUN_ID,
-        "NUM_LAYERS": str(num_layers),
-        "MLP_MULT": str(mlp_mult),
-        "MODEL_DIM": str(model_dim),
-    }
+    print(f"\nRunning config: {run_id}\n")
 
-    print(f"\nRunning config: {args_dict}\n\n")
-
-    my_env.update({
-        **args_dict,
-        "VOCAB_SIZE": "1024",
-        "MAX_WALLCLOCK_SECONDS": "120",
-        "VAL_LOSS_EVERY": "0",
-        "TRAIN_LOG_EVERY": "50",
-        "WARMDOWN_ITERS": "0",
-    })
+    my_env.update({k: str(v) for k, v in sweep_params.items()})
+    my_env["RUN_ID"] = run_id
 
     subprocess.run([
-            "torchrun",
-            "--standalone",
-            "--nproc_per_node=1",
-            "train_gpt.py",
-        ],
-        env=my_env,
-    )
-    
+        "torchrun",
+        "--standalone",
+        "--nproc_per_node=1",
+        "train_gpt.py",
+    ], env=my_env)
