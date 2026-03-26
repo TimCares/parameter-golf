@@ -1030,7 +1030,7 @@ def main() -> None:
 
         for opt in optimizers:
             for group in opt.param_groups:
-                group["lr"] = group["base_lr"] * scale_adam if isinstance(opt, torch.optim.Adam) else scale_muon
+                group["lr"] = group["base_lr"] * (scale_adam if isinstance(opt, torch.optim.Adam) else scale_muon)
 
         if args.grad_clip_norm > 0:
             torch.nn.utils.clip_grad_norm_(base_model.parameters(), args.grad_clip_norm)
