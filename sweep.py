@@ -1,14 +1,14 @@
 import subprocess, os
 from itertools import product
 
-# --- Sweep params (all combinations will be run) ---
 SWEEP = {
-    "TRAIN_SEQ_LEN":   [1024, 2048, 4096],
-    "LR_WARMUP_ITERS": [0, 10, 20],
+    "ADAM_LR_FAC": [1.5, 0.5],
+    "MATRIX_LR": [0.06, 0.02],
 }
 
-# --- Fixed params (same for every run) ---
 FIXED = {
+    "TRAIN_SEQ_LEN":          "2048",
+    "LR_WARMUP_ITERS":        "20",
     "NUM_LAYERS":             "10",
     "MLP_MULT":               "3",
     "MODEL_DIM":              "448",
@@ -26,6 +26,11 @@ my_env.update({k: str(v) for k, v in FIXED.items()})
 
 for combo in product(*value_lists):
     sweep_params = dict(zip(keys, combo))
+
+    sweep_params["TIED_EMBED_LR"] = round(0.05 * sweep_params["ADAM_LR_FAC"], 3)
+    sweep_params["SCALAR_LR"] = round(0.04 * sweep_params["ADAM_LR_FAC"], 3)
+    del sweep_params["ADAM_LR_FAC"]
+
     run_id = "_".join(f"{k}={v}" for k, v in sweep_params.items())
 
     print(f"\nRunning config: {run_id}\n")
