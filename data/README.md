@@ -64,3 +64,55 @@ MATCHED_FINEWEB_GPT2_DECODE_BATCH_SIZE=512
 ```
 
 These control batched tokenizer encoding during shard export, tokenizer thread count, tiktoken thread count, and batched GPT-2 decode for the blobstore docs-cache path.
+
+
+## Extension Vocab 2048
+
+Create the data:
+
+```bash
+MATCHED_FINEWEB_SP_BATCH_SIZE=2048 \
+MATCHED_FINEWEB_TOKENIZER_THREADS=16 \
+python3 data/download_hf_docs_and_tokenize.py \
+  --output-root ./data \
+  --tokenizer-config ./data/tokenizer_specs.json \
+  --tokenizer-train-docs 5000000
+```
+Note: It is best to comment the sp1024 part to avoid using a vocab of 1024, which is already provided by OpenAI.
+
+Prepare the upload dir:
+
+```bash
+cd data
+mkdir hf_upload
+mkdir hf_upload/datasets
+```
+
+Move the data into the upload dir (fast on Runpod network storage):
+
+```bash
+mv manifest.json docs_selected.jsonl docs_selected.source_manifest.json \
+  tokenizer_config.export.json tokenizer_specs.json \
+  datasets tokenizers \
+  hf_upload/datasets/
+```
+
+Upload the data:
+
+```bash
+hf upload-large-folder TCares/parameter-golf-data hf_upload --repo-type=dataset --num-workers=16
+```
+
+Download:
+
+```bash
+MATCHED_FINEWEB_REPO_ID=TCares/parameter-golf-data \
+python3 data/cached_challenge_fineweb.py --variant sp2048
+```
+
+Less data (as shown in OpenAI Readme):
+
+```bash
+MATCHED_FINEWEB_REPO_ID=TCares/parameter-golf-data \
+python3 data/cached_challenge_fineweb.py --variant sp2048 --train-shards 10
+```

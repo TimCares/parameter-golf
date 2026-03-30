@@ -2,8 +2,7 @@ import subprocess, os
 from itertools import product
 
 SWEEP = {
-    "ADAM_LR_FAC": [1.5, 0.5],
-    "MATRIX_LR": [0.06, 0.02],
+    "VOCAB_SIZE": ["2048"]
 }
 
 FIXED = {
@@ -12,11 +11,13 @@ FIXED = {
     "NUM_LAYERS":             "10",
     "MLP_MULT":               "3",
     "MODEL_DIM":              "448",
-    "VOCAB_SIZE":             "1024",
     "MAX_WALLCLOCK_SECONDS":  "240",
     "VAL_LOSS_EVERY":         "0",
     "TRAIN_LOG_EVERY":        "10",
     "WARMDOWN_ITERS":         "0",
+
+    "DATA_PATH":              "./data/datasets/fineweb10B_sp2048",
+    "TOKENIZER_PATH":         "./data/tokenizers/fineweb_2048_bpe.model",
 }
 
 # --- Run sweep ---
@@ -26,10 +27,6 @@ my_env.update({k: str(v) for k, v in FIXED.items()})
 
 for combo in product(*value_lists):
     sweep_params = dict(zip(keys, combo))
-
-    sweep_params["TIED_EMBED_LR"] = round(0.05 * sweep_params["ADAM_LR_FAC"], 3)
-    sweep_params["SCALAR_LR"] = round(0.04 * sweep_params["ADAM_LR_FAC"], 3)
-    del sweep_params["ADAM_LR_FAC"]
 
     run_id = "_".join(f"{k}={v}" for k, v in sweep_params.items())
 
