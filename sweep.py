@@ -2,10 +2,11 @@ import subprocess, os
 from itertools import product
 
 SWEEP = {
-    "VOCAB_SIZE": ["2048"]
+    "RESIDUALS": "KIMI_ATTN__PER_BLOCK__WEIGHT_1e-2",
 }
 
 FIXED = {
+    "VOCAB_SIZE":             "2048",
     "TRAIN_SEQ_LEN":          "2048",
     "LR_WARMUP_ITERS":        "20",
     "NUM_LAYERS":             "10",
