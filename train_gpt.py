@@ -87,9 +87,6 @@ class Hyperparameters:
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.0))
 
-
-    __residuals = os.environ.get("RESIDUALS")
-
 # -----------------------------
 # MUON OPTIMIZER 
 # -----------------------------
@@ -293,7 +290,7 @@ CONTROL_TENSOR_NAME_PATTERNS = tuple(
     pattern
     for pattern in os.environ.get(
         "CONTROL_TENSOR_NAME_PATTERNS",
-        "attn_scale,attn_scales,mlp_scale,mlp_scales,q_gain",
+        "attn_scale,attn_scales,mlp_scale,mlp_scales,resid_mix,resid_mixes,q_gain,skip_weight,skip_weights",
     ).split(",")
     if pattern
 )
@@ -638,28 +635,15 @@ class Block(nn.Module):
         self.mlp = MLP(dim, mlp_mult)
         self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
+        self.resid_mix = nn.Parameter(torch.stack((torch.ones(dim), torch.zeros(dim))).float())
 
-    def forward(self, x: Tensor,) -> Tensor:
+    def forward(self, x: Tensor, x0: Tensor) -> Tensor:
+        mix = self.resid_mix.to(dtype=x.dtype)
+        x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
         attn_out = self.attn(self.attn_norm(x))
         x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
         x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
         return x
-
-
-class AttentionResidual(nn.Module):
-    def __init__(self, dim: int):
-        super().__init__()
-        self.k_norm = RMSNorm()
-        self.q = nn.Parameter(torch.zeros(dim, dtype=torch.float32))
-
-    def forward(self, residuals: list[Tensor]) -> Tensor:
-        v = torch.stack(residuals) # [N, B, T, D]
-        k = self.k_norm(v) # [N, B, T, D]
-        q = self.q.to(dtype=k.dtype) # [D]
-
-        scores = k @ q # [N, B, T]
-        weights = scores.softmax(dim=0) # over previous blocks
-        return (weights[..., None] * v).sum(dim=0) # [B, T, D]
 
 
 class GPT(nn.Module):
@@ -686,6 +670,8 @@ class GPT(nn.Module):
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
+        self.num_skip_weights = min(self.num_encoder_layers, self.num_decoder_layers)
+        self.skip_weights = nn.Parameter(torch.ones(self.num_skip_weights, model_dim, dtype=torch.float32))
         self.blocks = nn.ModuleList(
             [
                 Block(
@@ -696,19 +682,9 @@ class GPT(nn.Module):
                     rope_base,
                     qk_gain_init,
                 )
-                for _ in range(num_layers)
+                for i in range(num_layers)
             ]
         )
-        
-        self.block_att_res = nn.ModuleList([
-            AttentionResidual(model_dim) for _ in range(num_layers - 1)
-        ])
-        self.block_attn_scales = nn.Parameter(
-            torch.zeros(num_layers - 1, model_dim, dtype=torch.float32)
-        )
-        nn.init.normal_(self.block_attn_scales, std=0.02)
-
-        self.num_layers = num_layers
         self.final_norm = RMSNorm()
         self.lm_head = None if tie_embeddings else CastedLinear(model_dim, vocab_size, bias=False)
         if self.lm_head is not None:
@@ -725,15 +701,17 @@ class GPT(nn.Module):
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         x = self.tok_emb(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
-        # x0 = x
+        x0 = x
+        skips: list[Tensor] = []
 
-        block_residuals: list[Tensor] = [] # [x0]
-
-        for i in range(self.num_layers):
-            if i > 0:
-                x = x + self.block_attn_scales[i - 1].to(dtype=x.dtype)[None, None, :] * self.block_att_res[i - 1](block_residuals)
-            x = self.blocks[i](x)
-            block_residuals.append(x)
+        # First half stores skips; second half reuses them in reverse order.
+        for i in range(self.num_encoder_layers):
+            x = self.blocks[i](x, x0)
+            skips.append(x)
+        for i in range(self.num_decoder_layers):
+            if skips:
+                x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
+            x = self.blocks[self.num_encoder_layers + i](x, x0)
 
         x = self.final_norm(x).reshape(-1, x.size(-1))
         targets = target_ids.reshape(-1)
@@ -882,11 +860,8 @@ def main() -> None:
         for name, p in block_named_params
         if p.ndim < 2 or any(pattern in name for pattern in CONTROL_TENSOR_NAME_PATTERNS)
     ]
-
-    scalar_params.append(base_model.block_attn_scales)
-    for module in base_model.block_att_res:
-        scalar_params.extend(module.parameters())
-    
+    if base_model.skip_weights.numel() > 0:
+        scalar_params.append(base_model.skip_weights)
     token_lr = args.tied_embed_lr if args.tie_embeddings else args.embed_lr
     optimizer_tok = torch.optim.Adam(
         [{"params": [base_model.tok_emb.weight], "lr": token_lr, "base_lr": token_lr}],
