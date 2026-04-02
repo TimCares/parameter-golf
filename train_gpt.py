@@ -62,6 +62,7 @@ class Hyperparameters:
 
     # Model shape.
     vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
+    bigram_vocab_size = int(os.environ.get("BIGRAM_VOCAB_SIZE", 10240))
     num_layers = int(os.environ.get("NUM_LAYERS", 9))
     num_kv_heads = int(os.environ.get("NUM_KV_HEADS", 4))
     model_dim = int(os.environ.get("MODEL_DIM", 512))
@@ -498,6 +499,13 @@ class DistributedTokenLoader:
 # TRANSFORMER MODULES
 # -----------------------------
 
+def get_bigram_hash(bigram_vocab_size, x):
+    rand_int_1 = 36313
+    rand_int_2 = 27191
+    mod = bigram_vocab_size - 1
+    x[:, 1:] = torch.bitwise_xor(rand_int_1 * x[:, 1:], rand_int_2 * x[:, :-1]) % mod
+    return x
+
 class RMSNorm(nn.Module):
     def __init__(self, eps: float | None = None):
         super().__init__()
@@ -639,11 +647,11 @@ class Block(nn.Module):
         self.mlp = MLP(dim, mlp_mult)
         self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
-        self.resid_mix = nn.Parameter(torch.stack((torch.ones(dim), torch.zeros(dim))).float())
+        self.resid_mix = nn.Parameter(torch.stack((torch.ones(dim), torch.zeros(dim), 0.1*torch.ones(dim))).float())
 
-    def forward(self, x: Tensor, x0: Tensor) -> Tensor:
+    def forward(self, x: Tensor, x0: Tensor, x_bigram: Tensor) -> Tensor:
         mix = self.resid_mix.to(dtype=x.dtype)
-        x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
+        x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0 + mix[2][None, None, :] * x_bigram
         attn_out = self.attn(self.attn_norm(x))
         x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
         x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
@@ -664,6 +672,7 @@ class GPT(nn.Module):
         logit_softcap: float,
         rope_base: float,
         qk_gain_init: float,
+        bigram_vocab_size: int,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -671,8 +680,15 @@ class GPT(nn.Module):
         self.tie_embeddings = tie_embeddings
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
+
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.tok_norm = RMSNorm()
+
+        self.bigram_vocab_size = bigram_vocab_size
+        self.bigram_embed = nn.Embedding(self.bigram_vocab_size, model_dim)
+        nn.init.zeros_(self.bigram_embed.weight)
+        self.bigram_norm = RMSNorm()
+
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
         self.num_skip_weights = min(self.num_encoder_layers, self.num_decoder_layers)
@@ -707,16 +723,20 @@ class GPT(nn.Module):
         x = self.tok_emb(input_ids)
         x = self.tok_norm(x)
         x0 = x
+
+        bigram_hash = get_bigram_hash(self.bigram_vocab_size, input_ids.clone())
+        x_bigram = self.bigram_norm(self.bigram_embed(bigram_hash))
+
         skips: list[Tensor] = []
 
         # First half stores skips; second half reuses them in reverse order.
         for i in range(self.num_encoder_layers):
-            x = self.blocks[i](x, x0)
+            x = self.blocks[i](x, x0, x_bigram)
             skips.append(x)
         for i in range(self.num_decoder_layers):
             if skips:
                 x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-            x = self.blocks[self.num_encoder_layers + i](x, x0)
+            x = self.blocks[self.num_encoder_layers + i](x, x0, x_bigram)
 
         x = self.final_norm(x).reshape(-1, x.size(-1))
         targets = target_ids.reshape(-1)
@@ -841,6 +861,7 @@ def main() -> None:
         logit_softcap=args.logit_softcap,
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
+        bigram_vocab_size=args.bigram_vocab_size,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -869,11 +890,12 @@ def main() -> None:
         scalar_params.append(base_model.skip_weights)
 
     scalar_params.append(base_model.tok_norm.scale)
+    scalar_params.append(base_model.bigram_norm.scale)
     scalar_params.append(base_model.final_norm.scale)
 
     token_lr = args.tied_embed_lr if args.tie_embeddings else args.embed_lr
     optimizer_tok = torch.optim.Adam(
-        [{"params": [base_model.tok_emb.weight], "lr": token_lr, "base_lr": token_lr}],
+        [{"params": [base_model.tok_emb.weight, base_model.bigram_embed.weight], "lr": token_lr, "base_lr": token_lr}],
         betas=(args.beta1, args.beta2),
         eps=args.adam_eps,
         fused=True,

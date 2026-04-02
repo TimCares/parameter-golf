@@ -2,7 +2,7 @@ import subprocess, os
 from itertools import product
 
 SWEEP = {
-    
+    "BIGRAM_VOCAB_SIZE": ["10240"],
 }
 
 FIXED = {
