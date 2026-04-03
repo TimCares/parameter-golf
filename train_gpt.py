@@ -496,6 +496,7 @@ def get_bigram_hash(bigram_vocab_size, x):
     rand_int_2 = 27191
     mod = bigram_vocab_size - 1
     x[:, 1:] = torch.bitwise_xor(rand_int_1 * x[:, 1:], rand_int_2 * x[:, :-1]) % mod
+    x[:, 0] = bigram_vocab_size - 1  # last index in bigram embedding matrix is reserved for first token -> has no previous bigram
     return x
 
 class RMSNorm(nn.Module):

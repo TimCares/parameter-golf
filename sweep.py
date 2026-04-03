@@ -6,7 +6,10 @@ MUON_MOMENTUM_WARMUP_STEPS_FAC = 500 / 20_000
 
 SWEEPS = [
     {
-        "BIGRAM_VOCAB_SIZE": "10240",
+        "BIGRAM_VOCAB_SIZE": "1024",
+    },
+    {
+        "BIGRAM_VOCAB_SIZE": "2048",
     },
 ]
 
@@ -51,7 +54,7 @@ for run in RUNS:
 
     run_args = {**run, **MISC_ARGS, **MODEL_ARGS, **DATA_ARGS}
     for sweep_args in SWEEPS:
-        run_id = "__".join(f"{k}={v}" for k, v in sweep_args.items())
+        run_id = "__".join(f"{k}={v}" for k, v in [*run.items(), *sweep_args.items()])
 
         full_args = {
             **run_args,
