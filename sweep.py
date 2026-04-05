@@ -6,10 +6,7 @@ MUON_MOMENTUM_WARMUP_STEPS_FAC = 500 / 20_000
 
 SWEEPS = [
     {
-        "BIGRAM_VOCAB_SIZE": "1024",
-    },
-    {
-        "BIGRAM_VOCAB_SIZE": "2048",
+        "SMEAR_GATE_LR": 0.01,
     },
 ]
 
@@ -20,6 +17,7 @@ DATA_ARGS = {
 }
 
 MODEL_ARGS = {
+    "BIGRAM_VOCAB_SIZE":      "1024",
     "VOCAB_SIZE":             "2048",
     "TRAIN_SEQ_LEN":          "2048",
     "NUM_LAYERS":             "10",

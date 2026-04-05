@@ -80,6 +80,9 @@ class Hyperparameters:
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.0))
 
+    smear_gate_lr = float(os.environ.get("SMEAR_GATE_LR", 0.01))
+    skip_gate_lr = float(os.environ.get("SKIP_GATE_LR", 0.05))
+
 # -----------------------------
 # MUON OPTIMIZER 
 # -----------------------------
@@ -680,6 +683,10 @@ class GPT(nn.Module):
         nn.init.zeros_(self.bigram_embed.weight)
         self.bigram_norm = RMSNorm()
 
+        self.smear_gate = nn.Linear(12, 1, bias=False)
+        nn.init.zeros_(self.smear_gate.weight)
+        self.smear_lambda = nn.Parameter(torch.tensor(0.0, dtype=torch.float32))
+
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
         self.num_skip_weights = min(self.num_encoder_layers, self.num_decoder_layers)
@@ -709,8 +716,11 @@ class GPT(nn.Module):
 
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         x = self.tok_emb(input_ids)
-        x = self.tok_norm(x)
-        x0 = x
+
+        smear_gate_out = self.smear_lambda * torch.sigmoid(self.smear_gate(x[:, 1:, :self.smear_gate.weight.size(-1)]))
+        x = torch.cat([x[:, :1], x[:, 1:] + smear_gate_out * x[:, :-1]], dim=1)
+
+        x = x0 = self.tok_norm(x)
 
         bigram_hash = get_bigram_hash(self.bigram_vocab_size, input_ids.clone())
         x_bigram = self.bigram_norm(self.bigram_embed(bigram_hash))
@@ -875,6 +885,8 @@ def main() -> None:
     scalar_params.append(base_model.bigram_norm.scale)
     scalar_params.append(base_model.final_norm.scale)
 
+    scalar_params.append(base_model.smear_lambda)
+
     optimizer_tok = torch.optim.Adam(
         [{"params": [base_model.tok_emb.weight, base_model.bigram_embed.weight], "lr": args.embed_lr, "base_lr": args.embed_lr}],
         betas=(args.beta1, args.beta2),
@@ -889,8 +901,11 @@ def main() -> None:
     )
     for group in optimizer_muon.param_groups:
         group["base_lr"] = args.matrix_lr
-    optimizer_scalar = torch.optim.Adam(
-        [{"params": scalar_params, "lr": args.scalar_lr, "base_lr": args.scalar_lr}],
+    
+    optimizer_scalar = torch.optim.Adam([
+            {"params": scalar_params, "lr": args.scalar_lr, "base_lr": args.scalar_lr},
+            {"params": [base_model.smear_gate.weight], "lr": args.smear_gate_lr, "base_lr": args.smear_gate_lr},
+        ],
         betas=(args.beta1, args.beta2),
         eps=args.adam_eps,
         fused=True,
