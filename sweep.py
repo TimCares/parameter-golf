@@ -6,23 +6,32 @@ MUON_MOMENTUM_WARMUP_STEPS_FAC = 500 / 20_000
 
 SWEEPS = [
     {
-        "SMEAR_GATE_LR": 0.01,
+        "QUANT_N_BITS": "8",
+    },
+    {
+        "QUANT_N_BITS": "6",
+    },
+    {
+        "QUANT_N_BITS": "5",
+    },
+    {
+        "QUANT_N_BITS": "4",
     },
 ]
 
 
 DATA_ARGS = {
-    "DATA_PATH":              "./data/datasets/fineweb10B_sp2048",
-    "TOKENIZER_PATH":         "./data/tokenizers/fineweb_2048_bpe.model",
+    "DATA_PATH":              "./data/datasets/fineweb10B_sp1024",
+    "TOKENIZER_PATH":         "./data/tokenizers/fineweb_1024_bpe.model",
 }
 
 MODEL_ARGS = {
     "BIGRAM_VOCAB_SIZE":      "1024",
-    "VOCAB_SIZE":             "2048",
-    "TRAIN_SEQ_LEN":          "2048",
-    "NUM_LAYERS":             "10",
-    "MLP_MULT":               "3",
-    "MODEL_DIM":              "448",
+    "VOCAB_SIZE":             "1024",
+    "TRAIN_SEQ_LEN":          "1024",
+    "NUM_LAYERS":             "9",
+    "MLP_MULT":               "2",
+    "MODEL_DIM":              "512",
 
 }
 
@@ -36,7 +45,6 @@ RUNS = [
     {
         "ITERATIONS": "200",
     },
-
     {
         "ITERATIONS": "400",
     },
