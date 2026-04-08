@@ -26,7 +26,6 @@ DATA_ARGS = {
 }
 
 MODEL_ARGS = {
-    "BIGRAM_VOCAB_SIZE":      "1024",
     "VOCAB_SIZE":             "1024",
     "TRAIN_SEQ_LEN":          "1024",
     "NUM_LAYERS":             "9",

@@ -817,7 +817,6 @@ def main() -> None:
         logit_softcap=args.logit_softcap,
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
-        bigram_vocab_size=args.bigram_vocab_size,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -845,7 +844,7 @@ def main() -> None:
         scalar_params.append(base_model.skip_weights)
 
     optimizer_tok = torch.optim.Adam(
-        [{"params": [base_model.tok_emb.weight, base_model.bigram_embed.weight], "lr": args.embed_lr, "base_lr": args.embed_lr}],
+        [{"params": [base_model.tok_emb.weight], "lr": args.embed_lr, "base_lr": args.embed_lr}],
         betas=(args.beta1, args.beta2),
         eps=args.adam_eps,
         fused=True,
@@ -861,7 +860,6 @@ def main() -> None:
     
     optimizer_scalar = torch.optim.Adam([
             {"params": scalar_params, "lr": args.scalar_lr, "base_lr": args.scalar_lr},
-            {"params": [base_model.smear_gate.weight], "lr": args.smear_gate_lr, "base_lr": args.smear_gate_lr},
         ],
         betas=(args.beta1, args.beta2),
         eps=args.adam_eps,
