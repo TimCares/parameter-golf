@@ -313,6 +313,66 @@ def keep_float_tensor(name: str, t: Tensor, passthrough_orig_dtypes: dict[str, s
         return t.to(dtype=QUANT_KEEP_FLOAT_STORE_DTYPE).contiguous()
     return t
 
+
+def pack_n_bits(t: Tensor, n_bits: int) -> Tensor:
+    assert t.dtype == torch.int8
+
+    min_val = -(1 << (n_bits - 1))
+    max_val = (1 << (n_bits - 1)) - 1
+
+    t_min = int(t.min().item())
+    t_max = int(t.max().item())
+    assert t_min >= min_val and t_max <= max_val
+
+    x = t.flatten()
+    num_values = x.numel()
+    buffer_size = math.ceil(num_values * n_bits / 8)
+
+    buffer = torch.zeros(buffer_size, dtype=torch.uint8, device=x.device)
+
+    payload = (x.to(torch.int16) % (1 << n_bits)).to(torch.uint16)
+
+    global_idx = torch.arange(num_values, device=x.device, dtype=torch.int64) * n_bits
+    byte_idx = global_idx // 8
+    bit_offset = global_idx % 8
+
+    main = (payload << bit_offset).to(torch.uint8)
+    buffer.scatter_add_(0, byte_idx, main)
+
+    spill_mask = (bit_offset + n_bits) > 8
+    if spill_mask.any():
+        spill_idx = byte_idx[spill_mask] + 1
+        spill_shift = 8 - bit_offset[spill_mask]
+        spill = (payload[spill_mask] >> spill_shift).to(torch.uint8)
+        buffer.scatter_add_(0, spill_idx, spill)
+
+    return buffer
+
+
+def unpack_n_bits(buffer: Tensor, n_bits: int, shape: tuple[int, ...]) -> Tensor:
+    assert buffer.dtype == torch.uint8
+
+    buffer_size = math.prod(shape)
+
+    global_bit_pos = torch.arange(buffer_size, device=buffer.device, dtype=torch.int64) * n_bits
+    byte_idx = global_bit_pos // 8
+    bit_offset = global_bit_pos % 8
+
+    cur = buffer[byte_idx].to(torch.uint16)
+    next_ = torch.zeros_like(cur)
+    next_mask = (byte_idx + 1) < buffer.numel()
+    next_[next_mask] = buffer[byte_idx[next_mask] + 1].to(torch.uint16)
+
+    raw = (cur >> bit_offset) | (next_ << (8 - bit_offset))
+    mask = (1 << n_bits) - 1
+    raw = raw & mask
+
+    sign_bit = 1 << (n_bits - 1)
+    signed = torch.where(raw >= sign_bit, raw.to(torch.int16) - (1 << n_bits), raw.to(torch.int16))
+
+    return signed.to(torch.int8).reshape(shape)
+
+
 def quantize_float_tensor(t: Tensor, n_bits: int) -> tuple[Tensor, Tensor]:
     max_val = 2 ** (n_bits - 1) - 1
 
@@ -338,6 +398,7 @@ def quantize_float_tensor(t: Tensor, n_bits: int) -> tuple[Tensor, Tensor]:
 
 def quantize_state_dict(state_dict: dict[str, Tensor], n_bits: int = 8):
     quantized: dict[str, Tensor] = {}
+    shapes: dict[str, tuple[int, ...]] = {}
     scales: dict[str, Tensor] = {}
     dtypes: dict[str, str] = {}
     passthrough: dict[str, Tensor] = {}
@@ -372,16 +433,18 @@ def quantize_state_dict(state_dict: dict[str, Tensor], n_bits: int = 8):
         q, s = quantize_float_tensor(t, n_bits)
         if s.ndim > 0:
             qmeta[name] = {"scheme": "per_row", "axis": 0}
-        quantized[name] = q
+        quantized[name] = pack_n_bits(q, n_bits=n_bits)
         scales[name] = s
+        shapes[name] = t.shape
         dtypes[name] = str(t.dtype).removeprefix("torch.")
-        stats["quant_payload_bytes"] += tensor_nbytes(q) + tensor_nbytes(s)
+        stats["quant_payload_bytes"] += tensor_nbytes(quantized[name]) + tensor_nbytes(s)
 
     obj: dict[str, object] = {
         "__quant_format__": f"int{n_bits}_clean_per_row_v1",
         "quantized": quantized,
         "scales": scales,
         "dtypes": dtypes,
+        "shapes": shapes,
         "passthrough": passthrough,
     }
     if qmeta:
@@ -390,13 +453,15 @@ def quantize_state_dict(state_dict: dict[str, Tensor], n_bits: int = 8):
         obj["passthrough_orig_dtypes"] = passthrough_orig_dtypes
     return obj, stats
 
-def dequantize_state_dict(obj: dict[str, object]) -> dict[str, Tensor]:
+def dequantize_state_dict(obj: dict[str, object], n_bits: int) -> dict[str, Tensor]:
     out: dict[str, Tensor] = {}
     qmeta = obj.get("qmeta", {})
     passthrough_orig_dtypes = obj.get("passthrough_orig_dtypes", {})
     for name, q in obj["quantized"].items():
         dtype = getattr(torch, obj["dtypes"][name])
         s = obj["scales"][name]
+        shape = obj["shapes"][name]
+        q = unpack_n_bits(q, n_bits=n_bits, shape=shape)
         if qmeta.get(name, {}).get("scheme") == "per_row" or s.ndim > 0:
             s = s.to(dtype=torch.float32)
             # Broadcast the saved row scale back across trailing dimensions.
@@ -1076,7 +1141,7 @@ def main() -> None:
         log0(f"Code size: {code_bytes} bytes")
         log0(f"Total submission size: {model_bytes + code_bytes} bytes")
 
-    quant_obj, quant_stats = quantize_state_dict(base_model.state_dict(), n_bits)
+    quant_obj, quant_stats = quantize_state_dict(base_model.state_dict(), n_bits=n_bits)
     quant_buf = io.BytesIO()
     torch.save(quant_obj, quant_buf)
     quant_raw = quant_buf.getvalue()
@@ -1099,7 +1164,7 @@ def main() -> None:
     with open(quant_filename, "rb") as f:
         quant_blob_disk = f.read()
     quant_state = torch.load(io.BytesIO(zlib.decompress(quant_blob_disk)), map_location="cpu")
-    base_model.load_state_dict(dequantize_state_dict(quant_state), strict=True)
+    base_model.load_state_dict(dequantize_state_dict(quant_state, n_bits=n_bits), strict=True)
     torch.cuda.synchronize()
     t_qeval = time.perf_counter()
     q_val_loss, q_val_bpb = eval_val(
