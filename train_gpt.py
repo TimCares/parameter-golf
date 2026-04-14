@@ -334,7 +334,7 @@ def pack_n_bits(t: Tensor, n_bits: int) -> Tensor:
 
     global_idx = torch.arange(num_values, device=x.device, dtype=torch.int64) * n_bits
     byte_idx = global_idx // 8
-    bit_offset = global_idx % 8
+    bit_offset = (global_idx % 8).to(torch.uint16)
 
     main = (payload << bit_offset).to(torch.uint8)
     buffer.scatter_add_(0, byte_idx, main)
@@ -356,7 +356,7 @@ def unpack_n_bits(buffer: Tensor, n_bits: int, shape: tuple[int, ...]) -> Tensor
 
     global_bit_pos = torch.arange(buffer_size, device=buffer.device, dtype=torch.int64) * n_bits
     byte_idx = global_bit_pos // 8
-    bit_offset = global_bit_pos % 8
+    bit_offset = (global_bit_pos % 8).to(torch.uint16)
 
     cur = buffer[byte_idx].to(torch.uint16)
     next_ = torch.zeros_like(cur)
