@@ -330,20 +330,20 @@ def pack_n_bits(t: Tensor, n_bits: int) -> Tensor:
 
     buffer = torch.zeros(buffer_size, dtype=torch.uint8, device=x.device)
 
-    payload = (x.to(torch.int16) % (1 << n_bits)).to(torch.uint16)
+    payload = x.to(torch.int32) % (1 << n_bits)
 
     global_idx = torch.arange(num_values, device=x.device, dtype=torch.int64) * n_bits
     byte_idx = global_idx // 8
-    bit_offset = (global_idx % 8).to(torch.uint16)
+    bit_offset = (global_idx % 8).to(torch.int32)
 
-    main = (payload << bit_offset).to(torch.uint8)
+    main = ((payload << bit_offset) & 0xFF).to(torch.uint8)
     buffer.scatter_add_(0, byte_idx, main)
 
     spill_mask = (bit_offset + n_bits) > 8
     if spill_mask.any():
         spill_idx = byte_idx[spill_mask] + 1
         spill_shift = 8 - bit_offset[spill_mask]
-        spill = (payload[spill_mask] >> spill_shift).to(torch.uint8)
+        spill = ((payload[spill_mask] >> spill_shift) & 0xFF).to(torch.uint8)
         buffer.scatter_add_(0, spill_idx, spill)
 
     return buffer
@@ -356,19 +356,17 @@ def unpack_n_bits(buffer: Tensor, n_bits: int, shape: tuple[int, ...]) -> Tensor
 
     global_bit_pos = torch.arange(buffer_size, device=buffer.device, dtype=torch.int64) * n_bits
     byte_idx = global_bit_pos // 8
-    bit_offset = (global_bit_pos % 8).to(torch.uint16)
+    bit_offset = (global_bit_pos % 8).to(torch.int32)
 
-    cur = buffer[byte_idx].to(torch.uint16)
+    cur = buffer[byte_idx].to(torch.int32)
     next_ = torch.zeros_like(cur)
     next_mask = (byte_idx + 1) < buffer.numel()
-    next_[next_mask] = buffer[byte_idx[next_mask] + 1].to(torch.uint16)
+    next_[next_mask] = buffer[byte_idx[next_mask] + 1].to(torch.int32)
 
-    raw = (cur >> bit_offset) | (next_ << (8 - bit_offset))
-    mask = (1 << n_bits) - 1
-    raw = raw & mask
+    raw = ((cur >> bit_offset) | (next_ << (8 - bit_offset))) & ((1 << n_bits) - 1)
 
     sign_bit = 1 << (n_bits - 1)
-    signed = torch.where(raw >= sign_bit, raw.to(torch.int16) - (1 << n_bits), raw.to(torch.int16))
+    signed = torch.where(raw >= sign_bit, raw - (1 << n_bits), raw)
 
     return signed.to(torch.int8).reshape(shape)
 
