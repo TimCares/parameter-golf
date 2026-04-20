@@ -6,24 +6,7 @@ MUON_MOMENTUM_WARMUP_STEPS_FAC = 500 / 20_000
 
 SWEEPS = [
     {
-        "NUM_LAYERS": "10",
-        "MLP_MULT": "2",
-        "MODEL_DIM": "512",
-    },
-    {
-        "NUM_LAYERS": "11",
-        "MLP_MULT": "2",
-        "MODEL_DIM": "512",
-    },
-    {
-        "NUM_LAYERS": "9",
-        "MLP_MULT": "3",
-        "MODEL_DIM": "512",
-    },
-    {
-        "NUM_LAYERS": "15",
-        "MLP_MULT": "2",
-        "MODEL_DIM": "384",
+        "SKIP_ATTN": "True",
     },
 ]
 
@@ -34,6 +17,9 @@ DATA_ARGS = {
 }
 
 MODEL_ARGS = {
+    "MLP_MULT":               "2",
+    "MODEL_DIM":              "512",
+    "NUM_LAYERS":             "11",
     "QUANT_N_BITS":           "6",
     "VOCAB_SIZE":             "1024",
     "TRAIN_SEQ_LEN":          "1024",

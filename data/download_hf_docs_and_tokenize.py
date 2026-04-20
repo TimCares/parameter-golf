@@ -335,16 +335,26 @@ def export_shards(
     fill = 0
     split = "val"
     shards = {"val": 0, "train": 0}
+    doc_intervals = [0]
 
     def flush() -> None:
-        nonlocal fill
+        nonlocal fill, doc_intervals
+                
         if fill == 0:
+            doc_intervals = [0]
             return
+        
+        assert doc_intervals[0] == 0 and doc_intervals[-1] == fill
+        assert all(doc_intervals[i] < doc_intervals[i+1] for i in range(len(doc_intervals)-1))
+
         write_datafile(output_dir / f"fineweb_{split}_{shards[split]:06d}.bin", buf[:fill])
+        write_datafile(output_dir / f"fineweb_{split}_{shards[split]:06d}_doc_intervals.bin", np.asarray(doc_intervals, dtype=np.int32))
+        
         stats["files_total"] += 1
         stats[f"files_{split}"] += 1
         shards[split] += 1
         fill = 0
+        doc_intervals = [0]
 
     vocab_size = int(tok["vocab_size"])
     if vocab_size > 2**16:
@@ -384,7 +394,11 @@ def export_shards(
                 fill += take
                 pos += take
                 if fill == shard_size:
+                    doc_intervals.append(fill)
                     flush()
+                    break  # discard the rest of the document, also fixes missing BOS at shard start if a document goes beyond a shard boundary
+            if fill > 0:
+                doc_intervals.append(fill)
 
         if stats["docs_total"] and stats["docs_total"] % 100_000 == 0:
             print(f"{output_dir.name}: {stats['docs_total']}/{docs_total} docs", flush=True)
