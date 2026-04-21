@@ -731,7 +731,7 @@ class GPT(nn.Module):
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
-        self.num_encoder_layers = num_layers // 2
+        self.num_encoder_layers = int(math.ceil(num_layers / 2))
         self.num_decoder_layers = num_layers - self.num_encoder_layers
         self.num_skip_weights = min(self.num_encoder_layers, self.num_decoder_layers)
         self.skip_weights = nn.Parameter(torch.ones(self.num_skip_weights, model_dim, dtype=torch.float32))
@@ -749,6 +749,10 @@ class GPT(nn.Module):
                 for i in range(num_layers)
             ]
         )
+
+        self.num_layers = num_layers
+        self.even_layers = self.num_layers % 2 == 0
+
         self.final_norm = RMSNorm()
         self._init_weights()
 
@@ -765,13 +769,17 @@ class GPT(nn.Module):
         x0 = x
         skips: list[Tensor] = []
 
-        # First half stores skips; second half reuses them in reverse order.
         for i in range(self.num_encoder_layers):
             x = self.blocks[i](x, x0)
-            skips.append(x)
+
+            if self.even_layers or i < self.num_encoder_layers - 1:
+                skips.append(x)
+
+        
         for i in range(self.num_decoder_layers):
             if skips:
                 x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
+            
             x = self.blocks[self.num_encoder_layers + i](x, x0)
 
         x = self.final_norm(x).reshape(-1, x.size(-1))

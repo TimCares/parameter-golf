@@ -33,9 +33,15 @@ MISC_ARGS= {
 
 RUNS = [
     {
-        "ITERATIONS": "400",
+        "SEED":       "1337",
+        "ITERATIONS": "600",
     },
     {
+        "SEED":       "314",
+        "ITERATIONS": "600",
+    },
+    {
+        "SEED":       "999",
         "ITERATIONS": "600",
     },
 ]
