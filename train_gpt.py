@@ -744,7 +744,7 @@ class GPT(nn.Module):
                     mlp_mult,
                     rope_base,
                     qk_gain_init,
-                    has_attn=i % 2 == 0 or has_attn,
+                    has_attn=i < self.num_encoder_layers,
                 )
                 for i in range(num_layers)
             ]
