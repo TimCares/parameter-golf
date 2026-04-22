@@ -81,7 +81,6 @@ class Hyperparameters:
 
     quant_n_bits = int(os.environ.get("QUANT_N_BITS", 8))
 
-    skip_attn = bool(os.environ.get("SKIP_ATTN", False))
 
 # -----------------------------
 # MUON OPTIMIZER 
@@ -683,13 +682,11 @@ class Block(nn.Module):
         mlp_mult: int,
         rope_base: float,
         qk_gain_init: float,
-        has_attn: float = True,
     ):
         super().__init__()
-        self.has_attn = has_attn
         
         self.attn_norm = RMSNorm()
-        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init) if self.has_attn else None
+        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
         self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         
         self.mlp = MLP(dim, mlp_mult)
@@ -698,15 +695,12 @@ class Block(nn.Module):
 
         self.resid_mix = nn.Parameter(torch.stack((torch.ones(dim), torch.zeros(dim))).float())
 
-    def forward(self, x: Tensor, x0: Tensor, attn_layer: nn.Module | None = None) -> Tensor:
+    def forward(self, x: Tensor, x0: Tensor) -> Tensor:
         mix = self.resid_mix.to(dtype=x.dtype)
         x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
 
-        attn = self.attn if self.attn is not None else attn_layer
-
-        if attn:
-            attn_out = attn(self.attn_norm(x))
-            x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
+        attn_out = self.attn(self.attn_norm(x))
+        x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
         
         x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
         return x
@@ -745,9 +739,8 @@ class GPT(nn.Module):
                     mlp_mult,
                     rope_base,
                     qk_gain_init,
-                    has_attn=i < self.num_encoder_layers,
                 )
-                for i in range(num_layers)
+                for _ in range(num_layers)
             ]
         )
 
@@ -769,19 +762,17 @@ class GPT(nn.Module):
         x = F.rms_norm(x, (x.size(-1),))
         x0 = x
         skips: list[Tensor] = []
-        attn_layers: list[nn.Module] = []
 
         for i in range(self.num_encoder_layers):
             x = self.blocks[i](x, x0)
 
             if self.even_layers or i < self.num_encoder_layers - 1:
                 skips.append(x)
-                attn_layers.append(self.blocks[i].attn)
         
         for i in range(self.num_decoder_layers):
             if skips:
                 x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-            x = self.blocks[self.num_encoder_layers + i](x, x0, attn_layer=attn_layers.pop())
+            x = self.blocks[self.num_encoder_layers + i](x, x0)
 
         x = self.final_norm(x).reshape(-1, x.size(-1))
         targets = target_ids.reshape(-1)
@@ -901,7 +892,6 @@ def main() -> None:
         logit_softcap=args.logit_softcap,
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
-        has_attn=not args.skip_attn,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
