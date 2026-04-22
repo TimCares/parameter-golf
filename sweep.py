@@ -5,9 +5,7 @@ WARMUP_FAC = 20 / 450
 MUON_MOMENTUM_WARMUP_STEPS_FAC = 500 / 20_000
 
 SWEEPS = [
-    {
-        "SKIP_ATTN": "True",
-    },
+    {},
 ]
 
 
