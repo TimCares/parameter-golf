@@ -688,9 +688,9 @@ class Block(nn.Module):
         super().__init__()
         self.has_attn = has_attn
         
-        self.attn_norm = RMSNorm() if self.has_attn else None
+        self.attn_norm = RMSNorm()
         self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init) if self.has_attn else None
-        self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32)) if self.has_attn else None
+        self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
         
         self.mlp = MLP(dim, mlp_mult)
         self.mlp_norm = RMSNorm()
@@ -698,12 +698,14 @@ class Block(nn.Module):
 
         self.resid_mix = nn.Parameter(torch.stack((torch.ones(dim), torch.zeros(dim))).float())
 
-    def forward(self, x: Tensor, x0: Tensor) -> Tensor:
+    def forward(self, x: Tensor, x0: Tensor, attn_layer: nn.Module | None = None) -> Tensor:
         mix = self.resid_mix.to(dtype=x.dtype)
         x = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
 
-        if self.has_attn:
-            attn_out = self.attn(self.attn_norm(x))
+        attn = self.attn if self.attn is not None else attn_layer
+
+        if attn:
+            attn_out = attn(self.attn_norm(x))
             x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
         
         x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
@@ -723,7 +725,6 @@ class GPT(nn.Module):
         logit_softcap: float,
         rope_base: float,
         qk_gain_init: float,
-        has_attn: bool = True,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -744,7 +745,7 @@ class GPT(nn.Module):
                     mlp_mult,
                     rope_base,
                     qk_gain_init,
-                    has_attn=i % 2 == 0,
+                    has_attn=i < self.num_encoder_layers,
                 )
                 for i in range(num_layers)
             ]
@@ -768,19 +769,19 @@ class GPT(nn.Module):
         x = F.rms_norm(x, (x.size(-1),))
         x0 = x
         skips: list[Tensor] = []
+        attn_layers: list[nn.Module] = []
 
         for i in range(self.num_encoder_layers):
             x = self.blocks[i](x, x0)
 
             if self.even_layers or i < self.num_encoder_layers - 1:
                 skips.append(x)
-
+                attn_layers.append(self.blocks[i].attn)
         
         for i in range(self.num_decoder_layers):
             if skips:
                 x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-            
-            x = self.blocks[self.num_encoder_layers + i](x, x0)
+            x = self.blocks[self.num_encoder_layers + i](x, x0, attn_layer=attn_layers.pop())
 
         x = self.final_norm(x).reshape(-1, x.size(-1))
         targets = target_ids.reshape(-1)
