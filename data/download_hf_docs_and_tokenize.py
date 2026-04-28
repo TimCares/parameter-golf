@@ -131,23 +131,24 @@ def batched_docs_jsonl(path: Path, batch_size: int):
         yield batch
 
 
-def write_datafile(path: Path, toks: Any) -> None:
-    if len(toks) >= 2**31:
+def write_datafile(path: Path, arr: Any, *, dtype: np.dtype = np.dtype(np.uint16)) -> None:
+    if len(arr) >= 2**31:
         raise ValueError("token count too large")
     header = np.zeros(256, dtype="<i4")
     header[0] = DATAFILE_MAGIC
     header[1] = DATAFILE_VERSION
-    header[2] = len(toks)
-    toks = np.asarray(toks)
-    if toks.dtype != np.uint16:
-        if not ((0 <= toks).all() and (toks < 2**16).all()):
-            raise ValueError("token dictionary too large for uint16")
-        toks = toks.astype("<u2", copy=False)
-    else:
-        toks = toks.astype("<u2", copy=False)
+    header[2] = len(arr)
+    header[3] = np.dtype(dtype).itemsize
+    arr = np.asarray(arr)
+    if arr.dtype != dtype:
+        # safety check appropriate for the chosen dtype
+        info = np.iinfo(dtype)
+        if not ((info.min <= arr).all() and (arr <= info.max).all()):
+            raise ValueError(f"values out of range for {dtype}")
+        arr = arr.astype(dtype, copy=False)
     with path.open("wb") as f:
         f.write(header.tobytes())
-        f.write(toks.tobytes())
+        f.write(arr.tobytes())
 
 
 def relativize_manifest_paths(value: Any, root: Path) -> Any:
@@ -348,7 +349,7 @@ def export_shards(
         assert all(doc_intervals[i] < doc_intervals[i+1] for i in range(len(doc_intervals)-1))
 
         write_datafile(output_dir / f"fineweb_{split}_{shards[split]:06d}.bin", buf[:fill])
-        write_datafile(output_dir / f"fineweb_{split}_{shards[split]:06d}_doc_intervals.bin", np.asarray(doc_intervals, dtype=np.int32))
+        write_datafile(output_dir / f"fineweb_{split}_{shards[split]:06d}_doc_intervals.bin", np.asarray(doc_intervals, dtype=np.int32), dtype=np.dtype(np.int32))
         
         stats["files_total"] += 1
         stats[f"files_{split}"] += 1
